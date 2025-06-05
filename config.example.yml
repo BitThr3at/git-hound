@@ -1,9 +1,16 @@
 # Instructions: rename this file to config.yml. 
 # DO NOT CHECK YOUR USERNAME AND PASSWORD INTO GIT!
 
-# GitHub Access Token
+# GitHub Access Token (single token - for backward compatibility)
 # Instructions: Create a GitHub access token at https://github.com/settings/personal-access-tokens.
 github_access_token: "API_TOKEN"
+
+# GitHub Access Tokens (multiple tokens for rotation)
+# Uncomment and add multiple tokens for better rate limiting
+# github_tokens:
+#   - "API_TOKEN_1"
+#   - "API_TOKEN_2"
+#   - "API_TOKEN_3"
 
 
 # WebSocket URL for GitHound Explore (--dashboard)

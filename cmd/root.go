@@ -30,7 +30,7 @@ import (
 func InitializeFlags() {
 	rootCmd.PersistentFlags().StringVar(&app.GetFlags().SearchType, "search-type", "", "Search interface (`api` or `ui`).")
 	rootCmd.PersistentFlags().StringVar(&app.GetFlags().QueryFile, "query-file", "", "A file containing a list of subdomains (or other queries).")
-	rootCmd.PersistentFlags().StringVar(&app.GetFlags().Query, "query", "", "A query string (default: stdin)")
+	rootCmd.PersistentFlags().StringSliceVar(&app.GetFlags().Query, "query", []string{}, "Query strings (can be used multiple times: --query \"test.com\" --query \"@test.com\")")
 	rootCmd.PersistentFlags().StringVar(&app.GetFlags().SearchID, "search-id", "", "Search ID for dashboard mode (skips start_search step)")
 	rootCmd.PersistentFlags().BoolVar(&app.GetFlags().DigRepo, "dig-files", false, "Dig through the repo's files to find more secrets (CPU intensive).")
 	rootCmd.PersistentFlags().BoolVar(&app.GetFlags().DigCommits, "dig-commits", false, "Dig through commit history to find more secrets (CPU intensive).")
@@ -54,6 +54,7 @@ func InitializeFlags() {
 	rootCmd.PersistentFlags().BoolVar(&app.GetFlags().Debug, "debug", false, "Enables verbose debug logging.")
 	rootCmd.PersistentFlags().BoolVar(&app.GetFlags().APIDebug, "api-debug", false, "Prints details about GitHub API requests and counts them.")
 	rootCmd.PersistentFlags().StringVar(&app.GetFlags().OTPCode, "otp-code", "", "Github account 2FA token used for sign-in. (Only use if you have 2FA enabled on your account via authenticator app)")
+	rootCmd.PersistentFlags().StringSliceVar(&app.GetFlags().GithubTokens, "tokens", []string{}, "Comma-separated list of GitHub tokens for rotation (e.g. --tokens token1,token2,token3)")
 	rootCmd.PersistentFlags().BoolVar(&app.GetFlags().Dashboard, "dashboard", false, "Stream results to GitHoundExplore.com")
 	rootCmd.PersistentFlags().BoolVar(&app.GetFlags().EnableProfiling, "profile", false, "Enable pprof profiling on localhost:6060")
 	rootCmd.PersistentFlags().StringVar(&app.GetFlags().ProfileAddr, "profile-addr", "localhost:6060", "Address to serve pprof profiles")
@@ -173,8 +174,9 @@ var rootCmd = &cobra.Command{
 
 		var queries []string
 
-		if cmd.Flag("query").Value.String() != "" {
-			queries = append(queries, cmd.Flag("query").Value.String())
+		// Add queries from --query flags
+		if len(app.GetFlags().Query) > 0 {
+			queries = append(queries, app.GetFlags().Query...)
 		}
 		if cmd.Flag("query-file").Value.String() != "" {
 			for _, query := range app.GetFileLines(app.GetFlags().QueryFile) {
@@ -247,9 +249,17 @@ var rootCmd = &cobra.Command{
 		if app.GetFlags().SearchType == "ui" && viper.GetString("github_username") == "" {
 			color.Red("[!] GitHound run in UI mode but github_username not specified in config.yml. Update config.yml or run in API mode (flag: `--search-type api`)")
 			os.Exit(1)
-		} else if app.GetFlags().SearchType == "api" && viper.GetString("github_access_token") == "" {
-			color.Red("[!] GitHound run in API mode but github_access_token not specified in config.yml. Update config.yml or run in UI mode (flag: `--search-type ui`)")
-			os.Exit(1)
+		} else if app.GetFlags().SearchType == "api" {
+			// Check if any GitHub tokens are available (single token, multiple tokens, or CLI tokens)
+			hasTokens := app.GetFlags().GithubAccessToken != "" || len(app.GetFlags().GithubTokens) > 0
+			if !hasTokens {
+				color.Red("[!] GitHound run in API mode but no GitHub tokens available.")
+				color.Red("[!] Please provide tokens via:")
+				color.Red("[!]   --tokens token1,token2,token3")
+				color.Red("[!]   GITHOUND_GITHUB_TOKEN=your_token")
+				color.Red("[!]   or set 'github_access_token'/'github_tokens' in config.yml")
+				os.Exit(1)
+			}
 		}
 
 		if app.GetFlags().SearchType == "ui" {
@@ -417,13 +427,22 @@ func ReadConfig() {
 	// Read WebSocket URL from config (best effort)
 	app.GetFlags().WebSocketURL = viperext.GetString("websocket_url")
 
-	// Read GitHub token from config (if available)
+	// Read GitHub tokens from config (if available)
 	githubToken := viperext.GetString("github_access_token")
+	githubTokens := viperext.GetStringSlice("github_tokens")
+	
 	// Override with environment variable if set
 	if envToken := os.Getenv("GITHOUND_GITHUB_TOKEN"); envToken != "" {
 		githubToken = envToken
 	}
+	
+	// Set single token for backward compatibility
 	app.GetFlags().GithubAccessToken = githubToken
+	
+	// Set multiple tokens from config
+	if len(githubTokens) > 0 {
+		app.GetFlags().GithubTokens = append(app.GetFlags().GithubTokens, githubTokens...)
+	}
 
 	// Read Insert Key from config (if available)
 	insertKey := viperext.GetString("insert_key")
@@ -433,9 +452,11 @@ func ReadConfig() {
 	}
 	app.GetFlags().InsertKey = insertKey
 
-	// Now, check if the essential GitHub token is present
-	if app.GetFlags().GithubAccessToken == "" {
-		// Token is missing. Explain why and exit.
+	// Now, check if any GitHub tokens are present
+	hasTokens := app.GetFlags().GithubAccessToken != "" || len(app.GetFlags().GithubTokens) > 0
+	
+	if !hasTokens {
+		// No tokens available. Explain why and exit.
 		if configReadErr != nil {
 			if app.GetFlags().ConfigFile != "" {
 				// Config file was specified but not found/readable
@@ -444,12 +465,16 @@ func ReadConfig() {
 				// Default config file locations not found/readable
 				color.Red("[!] Default config file (config.yml in . or $HOME/.githound) could not be read: %v", configReadErr)
 			}
-			color.Red("[!] GitHub token also not found in GITHOUND_GITHUB_TOKEN environment variable.")
+			color.Red("[!] GitHub token also not found in GITHOUND_GITHUB_TOKEN environment variable or --tokens flag.")
 		} else {
-			// Config file was read successfully, but token was missing
-			color.Red("[!] GitHub token not found in config file ('github_access_token') or GITHOUND_GITHUB_TOKEN environment variable.")
+			// Config file was read successfully, but tokens were missing
+			color.Red("[!] GitHub tokens not found in config file ('github_access_token' or 'github_tokens'), GITHOUND_GITHUB_TOKEN environment variable, or --tokens flag.")
 		}
-		color.Red("[!] A GitHub token is required to run GitHound.")
+		color.Red("[!] At least one GitHub token is required to run GitHound.")
+		color.Red("[!] Usage examples:")
+		color.Red("[!]   --tokens token1,token2,token3")
+		color.Red("[!]   GITHOUND_GITHUB_TOKEN=your_token ./githound")
+		color.Red("[!]   or set 'github_access_token' or 'github_tokens' in config.yml")
 		os.Exit(1)
 		return
 	}

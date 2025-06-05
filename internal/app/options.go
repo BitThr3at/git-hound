@@ -3,7 +3,7 @@ package app
 // Flags stores the program options.
 type Flags struct {
 	QueryFile         string
-	Query             string
+	Query             []string
 	SearchID          string
 	DigRepo           bool
 	DigCommits        bool
@@ -31,7 +31,8 @@ type Flags struct {
 	WebSocketURL      string
 	EnableProfiling   bool   // Enable pprof profiling
 	ProfileAddr       string // Address to serve pprof profiles (host:port)
-	GithubAccessToken string // GitHub API token
+	GithubAccessToken string // GitHub API token (single token for backward compatibility)
+	GithubTokens      []string // Multiple GitHub API tokens for rotation
 	InsertKey         string // GitHoundExplore Insert Key
 	Trufflehog        bool   // Ingest trufflehog output without scanning
 }

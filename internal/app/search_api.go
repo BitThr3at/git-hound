@@ -34,31 +34,27 @@ func SearchWithAPI(queries []string) {
 	// Initialize HTTP request limiter
 	initHTTPSemaphore()
 
-	token := GetFlags().GithubAccessToken
-	if token == "" {
-		color.Red("[!] GitHub access token not found. Please set it using GITHOUND_GITHUB_TOKEN environment variable or in your config file.")
+	// Initialize token manager
+	tokenManager := GetTokenManager()
+	if tokenManager.GetTokenCount() == 0 {
+		color.Red("[!] No GitHub tokens available. Please provide tokens via --tokens flag, config file, or GITHOUND_GITHUB_TOKEN environment variable.")
 		os.Exit(1)
 	}
 
-	client := github.NewClient(nil).WithAuthToken(token)
+	// Validate all tokens
+	if err := tokenManager.ValidateTokens(); err != nil {
+		color.Red("[!] %v", err)
+		os.Exit(1)
+	}
+
+	client := tokenManager.GetClient()
 	if client == nil {
 		color.Red("[!] Unable to create GitHub client. Please check your configuration.")
 		os.Exit(1)
 	}
 
-	// Test the token by making a simple API call
-	_, _, err := client.Users.Get(context.Background(), "")
-	if err != nil {
-		if strings.Contains(err.Error(), "401") {
-			color.Red("[!] Invalid GitHub access token. Please check that your token is correct and has the necessary permissions.")
-		} else {
-			color.Red("[!] Error authenticating with GitHub: %v", err)
-		}
-		os.Exit(1)
-	}
-
 	if !GetFlags().ResultsOnly && !GetFlags().JsonOutput && GetFlags().Debug {
-		color.Cyan("[*] Logged into GitHub using API key")
+		color.Cyan("[*] Logged into GitHub using token rotation (%d tokens available)", tokenManager.GetTokenCount())
 	}
 
 	options := github.SearchOptions{
@@ -68,10 +64,14 @@ func SearchWithAPI(queries []string) {
 		},
 	}
 
-	http_client := http.Client{}
-	rt := WithHeader(http_client.Transport)
-	rt.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_13_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.132 Safari/537.36")
-	http_client.Transport = rt
+	// Create a simple HTTP client for downloading raw files (without GitHub API authentication)
+	createHTTPClient := func() *http.Client {
+		client := &http.Client{}
+		rt := WithHeader(client.Transport)
+		rt.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_13_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.132 Safari/537.36")
+		client.Transport = rt
+		return client
+	}
 
 	for _, query := range queries {
 		if GetFlags().Dashboard && GetFlags().InsertKey != "" {
@@ -82,13 +82,51 @@ func SearchWithAPI(queries []string) {
 			if GetFlags().Debug {
 				TrackAPIRequest("Search.Code", fmt.Sprintf("Query: %s, Page: %d", query, page))
 			}
+			
+			// Get current client (may have been rotated)
+			client = tokenManager.GetClient()
 			result, _, err := client.Search.Code(context.Background(), query, &options)
+			
 			for err != nil {
 				fmt.Println(err)
 				resetTime := extractResetTime(err.Error())
-				sleepDuration := resetTime + 3
-				color.Yellow("[!] GitHub API rate limit exceeded. Waiting %d seconds...", sleepDuration)
-				time.Sleep(time.Duration(sleepDuration) * time.Second)
+				
+				// Check for invalid token (401 error)
+				if isInvalidTokenError(err) {
+					tokenManager.MarkTokenInvalid()
+					
+					// Try to rotate to another valid token
+					client = tokenManager.RotateToken()
+					
+					// Check if we have any valid tokens left
+					availableTokens := tokenManager.GetAvailableTokensCount()
+					if availableTokens == 0 {
+						color.Red("[!] All tokens are invalid. Please check your GitHub tokens.")
+						os.Exit(1)
+					} else {
+						color.Cyan("[*] Rotated to next valid token (%d tokens still available)", availableTokens)
+					}
+				} else if resetTime > 0 {
+					// Mark current token as rate limited
+					tokenManager.SetRateLimit(time.Now().Add(time.Duration(resetTime+3) * time.Second))
+					
+					// Try to rotate to another token
+					client = tokenManager.RotateToken()
+					
+					// Check if we have any available tokens
+					availableTokens := tokenManager.GetAvailableTokensCount()
+					if availableTokens == 0 {
+						sleepDuration := resetTime + 3
+						color.Yellow("[!] All valid GitHub tokens are rate limited. Waiting %d seconds...", sleepDuration)
+						time.Sleep(time.Duration(sleepDuration) * time.Second)
+					} else {
+						color.Cyan("[*] Rotated to next available token (%d tokens still available)", availableTokens)
+					}
+				} else {
+					// Non-rate-limit error, wait a bit and retry
+					time.Sleep(5 * time.Second)
+				}
+				
 				if GetFlags().Debug {
 					TrackAPIRequest("Search.Code", fmt.Sprintf("Query: %s, Page: %d (retry)", query, page))
 				}
@@ -137,7 +175,7 @@ func SearchWithAPI(queries []string) {
 				// Submit the job to the worker pool instead of creating a goroutine directly
 				workerPool.Submit(func() {
 					// Process the repository in the worker pool
-					ScanAndPrintResult(&http_client, repoResult)
+					ScanAndPrintResult(createHTTPClient(), repoResult)
 				})
 			}
 		}
@@ -164,4 +202,13 @@ func extractResetTime(errorMessage string) int {
 		}
 	}
 	return 0
+}
+
+// isInvalidTokenError checks if the error indicates an invalid token (401)
+func isInvalidTokenError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errorMsg := err.Error()
+	return strings.Contains(errorMsg, "401") || strings.Contains(errorMsg, "Bad credentials")
 }

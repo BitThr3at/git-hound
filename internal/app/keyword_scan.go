@@ -110,16 +110,15 @@ func ScanAndPrintResult(client *http.Client, repo RepoSearchResult) {
 
 		// Process and display matches
 		if len(matches) > 0 {
-			// Fetch GitHub API info about the repo
-			token := GetFlags().GithubAccessToken
-			client := github.NewClient(nil).WithAuthToken(token)
-			if client != nil {
-				// gh_repo_obj, _, err := client.Repositories.Get(strings.Split(repo.Repo, "/")[0], strings.Split(repo.Repo, "/")[1])
+			// Fetch GitHub API info about the repo using token manager
+			tokenManager := GetTokenManager()
+			githubClient := tokenManager.GetClient()
+			if githubClient != nil {
 				// get repo's commits
 				owner := strings.Split(repo.Repo, "/")[0]
 				repoName := strings.Split(repo.Repo, "/")[1]
 				TrackAPIRequest("ListCommits", fmt.Sprintf("Owner: %s, Repo: %s, Path: %s", owner, repoName, repo.File))
-				commits, _, err := client.Repositories.ListCommits(context.Background(), owner, repoName, &github.CommitsListOptions{
+				commits, _, err := githubClient.Repositories.ListCommits(context.Background(), owner, repoName, &github.CommitsListOptions{
 					Path: repo.File,
 				})
 				if err != nil {
