@@ -1,8 +1,8 @@
 name: Release Go Binaries
 
 on:
-  push:
-    branches: [main]
+  release:
+    types: [created]
 
 permissions:
   contents: write
