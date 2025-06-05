@@ -12,10 +12,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: wangyoucao577/go-release-action@v1
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          goos: linux
-          goarch: amd64
-          binary_name: git-hound
-          extra_files: LICENSE README.md
+          go-version: stable
+
+      - name: Build binary
+        run: |
+          GOOS=linux GOARCH=amd64 go build -o git-hound .
+
+      - name: Upload binary to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly
+          files: git-hound
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
